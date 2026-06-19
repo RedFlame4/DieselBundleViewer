@@ -134,7 +134,7 @@ namespace DieselBundleViewer.Models
            else
            {
                 MemoryStream stream = FileStream(be);
-                return stream == null ? null : exporter.Export(FileStream(be));
+                return stream == null ? null : exporter.Export(stream);
             }
         }
 

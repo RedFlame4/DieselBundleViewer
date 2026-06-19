@@ -65,11 +65,15 @@
 		<Reference Include="DieselEngineFormats">
 			<HintPath>dlls\DieselEngineFormats.dll</HintPath>
 		</Reference>
-		<Reference Include="Wwise Sound Library">
-			<HintPath>dlls\Wwise Sound Library.dll</HintPath>
-		</Reference>
 	</ItemGroup>
 	<ItemGroup>
 		<Folder Include="Converter\" />
+	</ItemGroup>
+	<ItemGroup>
+		<!-- Copy the vgmstream CLI and its dependency DLLs next to the built app so
+		     the sound exporter can invoke it via a path relative to the app directory. -->
+		<None Update="vgmstream-win64\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
 	</ItemGroup>
 </Project>

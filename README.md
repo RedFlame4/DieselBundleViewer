@@ -20,11 +20,14 @@ The program is mostly based of DieselToolBox with some code taken from there.
 
 ## Installation
 Simply download from releases and unzip it somewhere.
-In case you don't have .NET Core 3.1, the program will prompt you to install it. However, you can install it easily from here: https://dotnet.microsoft.com/download/dotnet-core/current/runtime
+In case you don't have the .NET 8 Desktop Runtime, the program will prompt you to install it. However, you can install it easily from here: https://dotnet.microsoft.com/download/dotnet/8.0
 
-## Builiding
-The program is built using Visual Studio 2019 and .NET Core 3.1. Make sure you have both.
+## Building
+Built with Microsoft Visual Studio Community 2022 (64-bit), version 17.14.34, and .NET 8.0 targeting Windows. The project's target framework is `net8.0-windows7.0`. Make sure you have a compatible Visual Studio and the .NET 8.0 SDK.
 
 Most icons are from https://icons8.com/
 
 Source code of the DieselEngineFormats library https://github.com/Luffyyy/DieselEngineFormats
+
+## Audio conversion (vgmstream)
+Exporting stream/bnk audio to WAV is handled by [vgmstream](https://github.com/vgmstream/vgmstream), bundled in the `vgmstream-win64/` folder so it ships alongside the build. It correctly decodes the Wwise codecs PAYDAY 2 uses (IMA ADPCM and Vorbis) across their differing sample rates, which the previously bundled library mis-decoded. vgmstream is distributed under its own license; see `vgmstream-win64/COPYING`.
