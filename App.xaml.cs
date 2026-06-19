@@ -7,13 +7,12 @@ using DieselBundleViewer.ViewModels;
 using DieselBundleViewer.Services;
 using System.IO;
 using System;
+using System.Diagnostics;
 using DieselEngineFormats;
 using DieselEngineFormats.ScriptData;
 using System.Text;
 using System.Collections.Generic;
 using AdonisUI;
-using WwiseSoundLib;
-using Orangelynx.Multimedia;
 using System.Windows.Threading;
 
 namespace DieselBundleViewer
@@ -98,9 +97,65 @@ namespace DieselBundleViewer
                 Type = "stream",
                 SaveEvent = (Stream stream, string toPath) =>
                 {
-                    WavFile file = new WavFile(stream);
-                    WavProcessor.ConvertToPCM(file);
-                    file.WriteFile(toPath);
+                    // PD2 stream/bnk audio is Wwise-encoded (IMA ADPCM or Vorbis) at
+                    // varying sample rates. The bundled Wwise Sound Library mis-decodes
+                    // some of these (e.g. 32kHz gun SFX), so route through vgmstream-cli,
+                    // which reads the real format from each WEM header and decodes correctly.
+                    // Resolved relative to the app's own directory (the build copies
+                    // vgmstream-win64 into the output folder), so this works on any
+                    // machine/clone without a hardcoded absolute path.
+                    string vgmstreamPath = Path.Combine(AppContext.BaseDirectory, "vgmstream-win64", "vgmstream-cli.exe");
+
+                    if (!File.Exists(vgmstreamPath))
+                    {
+                        MessageBox.Show($"Could not find vgmstream-cli.exe at:\n{vgmstreamPath}", "Sound export error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        return;
+                    }
+
+                    // vgmstream selects its parser by file extension, so hand the raw
+                    // Wwise bytes over as a .wem file.
+                    string tempWem = Path.Combine(Path.GetTempPath(), "dbv_" + Guid.NewGuid().ToString("N") + ".wem");
+                    try
+                    {
+                        using (FileStream tmp = new FileStream(tempWem, FileMode.Create, FileAccess.Write))
+                        {
+                            stream.Position = 0;
+                            stream.CopyTo(tmp);
+                        }
+
+                        string outDir = Path.GetDirectoryName(toPath);
+                        if (!string.IsNullOrEmpty(outDir))
+                            Directory.CreateDirectory(outDir);
+
+                        ProcessStartInfo psi = new ProcessStartInfo
+                        {
+                            FileName = vgmstreamPath,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardError = true,
+                        };
+                        psi.ArgumentList.Add("-o");
+                        psi.ArgumentList.Add(toPath);
+                        psi.ArgumentList.Add(tempWem);
+
+                        using Process proc = Process.Start(psi);
+                        string stderr = proc.StandardError.ReadToEnd();
+                        proc.WaitForExit();
+
+                        if (proc.ExitCode != 0 || !File.Exists(toPath))
+                            Console.WriteLine($"vgmstream failed for {toPath}: {stderr}");
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Error converting sound to {toPath}: {e.Message}");
+                    }
+                    finally
+                    {
+                        if (File.Exists(tempWem))
+                        {
+                            try { File.Delete(tempWem); } catch { }
+                        }
+                    }
                 },
             });
 

@@ -351,7 +351,7 @@ namespace DieselBundleViewer.Services
                 {
                     progress.Report(new ProgressRecord("Reading bundle", total, currNum));
                     var entireBundle = new byte[fs.Length];
-                    await fs.ReadAsync(entireBundle.AsMemory(0, (int)fs.Length), ct);
+                    await fs.ReadExactlyAsync(entireBundle.AsMemory(0, (int)fs.Length), ct);
 
                     foreach (var (entry, pfe, bn) in fileList)
                     {
@@ -384,7 +384,7 @@ namespace DieselBundleViewer.Services
                         using var outfile = File.Create(path);
                         var buf = new byte[pfe.Length];
                         fs.Seek(pfe.Address, SeekOrigin.Begin);
-                        await fs.ReadAsync(buf.AsMemory(0, pfe.Length), ct);
+                        await fs.ReadExactlyAsync(buf.AsMemory(0, pfe.Length), ct);
                         await outfile.WriteAsync(buf.AsMemory(0, pfe.Length), ct);
 
                         currNum++;
