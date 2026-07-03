@@ -83,7 +83,7 @@ namespace DieselBundleViewer.Services
 
         public void PopulateFile(List<VirtualFileDataObject.FileDescriptor> files, FileEntry parent, string removeDirectory)
         {
-            if (parent.BundleEntries.Count == 0)
+            if (!parent.HasPackageData)
                 return;
 
             string name = parent.EntryPath;
@@ -103,8 +103,10 @@ namespace DieselBundleViewer.Services
                     byte[] bytes = parent.FileBytes(maxBundleEntry);
                     if (bytes != null)
                         stream.Write(bytes, 0, bytes.Length);
-                    else
+                    else if (maxBundleEntry != null)
                         Console.WriteLine("Failed to extract {0} from package: {1}", name, maxBundleEntry.PackageName.ToString());
+                    else
+                        Console.WriteLine("Failed to extract {0} from crate: {1}", name, parent.CrateEntry?.Parent.FilePath);
 
                     if(Progress != null)
                     {

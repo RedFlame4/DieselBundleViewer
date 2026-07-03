@@ -1,5 +1,6 @@
 ﻿using DieselBundleViewer.Models;
 using DieselEngineFormats.Bundle;
+using DieselEngineFormats.Crate;
 using Prism.Dialogs;
 using Prism.Mvvm;
 using System.Collections.ObjectModel;
@@ -7,15 +8,36 @@ using DieselBundleViewer.Services;
 
 namespace DieselBundleViewer.ViewModels
 {
-    public class PackageFileViewModel(PackageFileEntry entry) : BindableBase
+    // Common shape for anything shown in the Properties dialog's Bundles/Crates grid.
+    public interface IPackageEntryViewModel
+    {
+        string Name { get; }
+        string HashedName { get; }
+        string Size { get; }
+        ulong Address { get; }
+        ulong Length { get; }
+    }
+
+    public class PackageFileViewModel(PackageFileEntry entry) : BindableBase, IPackageEntryViewModel
     {
         private PackageFileEntry _entry = entry;
 
         public string Name => _entry.PackageName.UnHashed;
         public string HashedName => _entry.PackageName.HashedString;
-        public string Size => _entry.FileSize;
-        public uint Address => _entry.Address;
-        public int Length => _entry.Length;
+        public string Size => Utils.FriendlySize((ulong)_entry.Length);
+        public ulong Address => _entry.Address;
+        public ulong Length => (ulong)_entry.Length;
+    }
+
+    public class CrateFileViewModel(Idstring crateName, CrateFileEntry entry) : BindableBase, IPackageEntryViewModel
+    {
+        private readonly CrateFileEntry _entry = entry;
+
+        public string Name => crateName.UnHashed;
+        public string HashedName => crateName.HashedString;
+        public string Size => Utils.FriendlySize(_entry.RawSize);
+        public ulong Address => _entry.Offset;
+        public ulong Length => _entry.RawSize;
     }
 
     public class PropertiesViewModel : DialogBase
@@ -24,7 +46,7 @@ namespace DieselBundleViewer.ViewModels
 
         private EntryViewModel entryVM;
 
-        public ObservableCollection<PackageFileViewModel> Bundles { get; }
+        public ObservableCollection<IPackageEntryViewModel> Bundles { get; }
         public bool FolderVisibility => (entryVM != null && entryVM.IsFolder);
         public bool FileVisibility => !FolderVisibility;
 
@@ -76,7 +98,7 @@ namespace DieselBundleViewer.ViewModels
 
         public PropertiesViewModel() : base()
         {
-            Bundles = new ObservableCollection<PackageFileViewModel>();
+            Bundles = new ObservableCollection<IPackageEntryViewModel>();
         }
 
         protected override void PostDialogOpened(IDialogParameters pms)
@@ -92,15 +114,13 @@ namespace DieselBundleViewer.ViewModels
             RaisePropertyChanged(nameof(HashedName));
             RaisePropertyChanged(nameof(FolderContains));
 
-            IEntry entry = entryVM.Owner;
-            if(entry is FileEntry)
+            if (entryVM.Owner is FileEntry fileEntry)
             {
-                var bundles = (entry as FileEntry).BundleEntries;
-                foreach(var pair in bundles)
-                {
-                    var e = new PackageFileViewModel(pair.Value);
-                    Bundles.Add(e);
-                }
+                foreach(var pair in fileEntry.BundleEntries)
+                    Bundles.Add(new PackageFileViewModel(pair.Value));
+
+                if (fileEntry.CrateEntry != null)
+                    Bundles.Add(new CrateFileViewModel(fileEntry.CrateName, fileEntry.CrateEntry));
             }
         }
     }

@@ -1,6 +1,7 @@
 ﻿using DieselBundleViewer.Models;
 using DieselBundleViewer.ViewModels;
 using DieselEngineFormats.Bundle;
+using DieselEngineFormats.Crate;
 using Prism.Dialogs;
 using System;
 using System.Collections.Generic;
@@ -144,9 +145,9 @@ namespace DieselBundleViewer.Services
 
         public static void ConvertFile(FileEntry entry, Action<FormatConverter> done)
         {
-            if (entry.BundleEntries.Count == 0)
+            if (!entry.HasPackageData)
             {
-                Console.WriteLine("No bundle entries.");
+                Console.WriteLine("No bundle/crate entries.");
                 return;
             }
 
@@ -274,11 +275,7 @@ namespace DieselBundleViewer.Services
                                 return;
 
                             IEntry entry = entries[i];
-                            string entryPath = entry.EntryPath.Replace("/", "\\");
-                            if (!Settings.Data.ExtractFullDir && !string.IsNullOrEmpty(removeDirectory))
-                                entryPath = entryPath.Replace(removeDirectory.Replace("/", "\\") + "\\", "");
-
-                            string path = Path.Combine(fbd.SelectedPath, entryPath);
+                            string path = ResolveOutputPath(fbd.SelectedPath, entry.EntryPath, removeDirectory);
 
                             if (entry is FileEntry childFile)
                             {
@@ -301,11 +298,20 @@ namespace DieselBundleViewer.Services
             }
         }
 
+        private static string ResolveOutputPath(string outputDir, string entryPath, string removeDirectory)
+        {
+            entryPath = entryPath.Replace("/", "\\");
+            if (!Settings.Data.ExtractFullDir && !string.IsNullOrEmpty(removeDirectory))
+                entryPath = entryPath.Replace(removeDirectory.Replace("/", "\\") + "\\", "");
+            return Path.Combine(outputDir, entryPath);
+        }
+
         public static async Task ExtractAll(string outputDir, List<IEntry> files, string removeDirectory, IProgress<ProgressRecord> progress, CancellationToken ct)
         {
             progress.Report(new ProgressRecord("Determining working order", 0, 0));
 
             var filesToProcess = files.OfType<FileEntry>()
+                .Where(fe => fe.BundleEntries.Count > 0)
                 .Select<FileEntry, (FileEntry fe, PackageFileEntry pfe, string BundleName)>(fe =>
                 {
                     var bh = fe.MaxBundleEntry();
@@ -314,6 +320,12 @@ namespace DieselBundleViewer.Services
                 .GroupBy(i => i.BundleName)
                 .ToDictionary(t => t.Key, t => t.OrderBy(e => e.pfe.Address).ToList());
 
+            var crateFilesToProcess = files.OfType<FileEntry>()
+                .Where(fe => fe.BundleEntries.Count == 0 && fe.CrateEntry != null)
+                .Select(fe => (fe, ce: fe.CrateEntry))
+                .GroupBy(i => i.ce.Parent.FilePath)
+                .ToDictionary(t => t.Key, t => t.OrderBy(e => e.ce.Offset).ToList());
+
             var dirsToCreate = files.OfType<FolderEntry>().OrderBy(fe => fe.EntryPath).ToList();
             int total = dirsToCreate.Count;
             int currNum = 0;
@@ -321,16 +333,13 @@ namespace DieselBundleViewer.Services
             {
                 progress.Report(new ProgressRecord("Creating directory tree", total, currNum));
 
-                string entryPath = entry.EntryPath.Replace("/", "\\");
-                if (!Settings.Data.ExtractFullDir && !string.IsNullOrEmpty(removeDirectory))
-                    entryPath = entryPath.Replace(removeDirectory.Replace("/", "\\") + "\\", "");
-                string path = Path.Combine(outputDir, entryPath);
+                string path = ResolveOutputPath(outputDir, entry.EntryPath, removeDirectory);
                 Directory.CreateDirectory(path);
 
                 currNum++;
             }
 
-            total = filesToProcess.Select(kv => kv.Value.Count).Sum();
+            total = filesToProcess.Select(kv => kv.Value.Count).Sum() + crateFilesToProcess.Select(kv => kv.Value.Count).Sum();
             currNum = 0;
             foreach (var (bundleName, fileList) in filesToProcess)
             {
@@ -358,10 +367,7 @@ namespace DieselBundleViewer.Services
                         progress.Report(new ProgressRecord($"Copying {entry.EntryPath}", total, currNum));
                         if (ct.IsCancellationRequested) { return; }
 
-                        string entryPath = entry.EntryPath.Replace("/", "\\");
-                        if (!Settings.Data.ExtractFullDir && !string.IsNullOrEmpty(removeDirectory))
-                            entryPath = entryPath.Replace(removeDirectory.Replace("/", "\\") + "\\", "");
-                        string path = Path.Combine(outputDir, entryPath);
+                        string path = ResolveOutputPath(outputDir, entry.EntryPath, removeDirectory);
 
                         using var outfile = File.Create(path);
                         await outfile.WriteAsync(entireBundle.AsMemory((int)pfe.Address, (int)pfe.Length), ct);
@@ -376,10 +382,7 @@ namespace DieselBundleViewer.Services
                     {
                         progress.Report(new ProgressRecord($"Copying {entry.EntryPath}", total, currNum));
 
-                        string entryPath = entry.EntryPath.Replace("/", "\\");
-                        if (!Settings.Data.ExtractFullDir && !string.IsNullOrEmpty(removeDirectory))
-                            entryPath = entryPath.Replace(removeDirectory.Replace("/", "\\") + "\\", "");
-                        string path = Path.Combine(outputDir, entryPath);
+                        string path = ResolveOutputPath(outputDir, entry.EntryPath, removeDirectory);
 
                         using var outfile = File.Create(path);
                         var buf = new byte[pfe.Length];
@@ -389,6 +392,42 @@ namespace DieselBundleViewer.Services
 
                         currNum++;
                     }
+                }
+            }
+
+            foreach (var (cratePath, fileList) in crateFilesToProcess)
+            {
+                if (ct.IsCancellationRequested) { return; }
+
+                if (!File.Exists(cratePath))
+                {
+                    Console.WriteLine("Crate: {0}, does not exist!", cratePath);
+                    continue;
+                }
+
+                if (fileList.Count == 0) { continue; }
+
+                using var fs = new FileStream(cratePath, FileMode.Open, FileAccess.Read, FileShare.Read, 16834, true);
+
+                foreach (var (entry, ce) in fileList)
+                {
+                    progress.Report(new ProgressRecord($"Copying {entry.EntryPath}", total, currNum));
+                    if (ct.IsCancellationRequested) { return; }
+
+                    string path = ResolveOutputPath(outputDir, entry.EntryPath, removeDirectory);
+
+                    try
+                    {
+                        byte[] data = ce.Parent.ReadEntry(ce, fs);
+                        using var outfile = File.Create(path);
+                        await outfile.WriteAsync(data, ct);
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.WriteLine("Failed to extract {0} from crate: {1}", entry.EntryPath, exc.Message);
+                    }
+
+                    currNum++;
                 }
             }
 
@@ -404,7 +443,7 @@ namespace DieselBundleViewer.Services
         {
             try
             {
-                if (entry.BundleEntries.Count == 0)
+                if (!entry.HasPackageData)
                     return;
 
                 TempFile temp = GetTempFile(entry, be, exporter);

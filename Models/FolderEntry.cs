@@ -18,7 +18,7 @@ namespace DieselBundleViewer.Models
         public FolderEntry Parent { get; set; }
         public string EntryPath { get; set; }
         public string Name { get; set; }
-        public uint Size => 0;
+        public ulong Size => 0;
 
         private ulong? totalSize;
         public ulong TotalSize { 
@@ -102,7 +102,7 @@ namespace DieselBundleViewer.Models
 
             foreach (var child in children)
             {
-                if ((!(child is FileEntry entry) || pck == null || entry.BundleEntries.ContainsKey(pck)) && !(child is FolderEntry))
+                if ((!(child is FileEntry entry) || pck == null || entry.InBundle(pck)) && !(child is FolderEntry))
                     objs.Add(child);
             }
 
@@ -171,7 +171,7 @@ namespace DieselBundleViewer.Models
                 else if (entry.Value is FileEntry)
                 {
                     FileEntry _entry = entry.Value as FileEntry;
-                    if (_entry.BundleEntries.Count != 0 && (package != null ? _entry.BundleEntries.ContainsKey(package) : true))
+                    if (package != null ? _entry.InBundle(package) : _entry.HasPackageData)
                     {
                         return true;
                     }

@@ -14,7 +14,7 @@ namespace DieselBundleViewer.ViewModels
     {
         public override string Title => "Select Bundles";
 
-        public static List<ListBundle> Bundles;
+        public List<ListBundle> Bundles;
         public ObservableCollection<ListBundle> BundlesToRender { get; set; }
 
         public BundleSelectorDialogViewModel() : base()

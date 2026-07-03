@@ -39,7 +39,7 @@ namespace DieselBundleViewer.ViewModels
         public string Name => Owner.Name;
         public string EntryPath => Owner.EntryPath;
         public string Type => Owner.Type;
-        public uint Size => (Owner is FolderEntry) ? 0 : Owner.Size;
+        public ulong Size => (Owner is FolderEntry) ? 0 : Owner.Size;
         public string FriendlySize => (Owner is FolderEntry) ? "" : Utils.FriendlySize(Owner.Size);
 
         public bool FileLocationVis => Utils.CurrentWindow.CurrentPage.Value.IsSearch && SingleSelectionVis;

@@ -4,6 +4,7 @@ using DieselBundleViewer.Objects;
 using DieselBundleViewer.Services;
 using DieselBundleViewer.Views;
 using DieselEngineFormats.Bundle;
+using DieselEngineFormats.Crate;
 using DieselEngineFormats.Utils;
 using Microsoft.Win32;
 using Prism.Commands;
@@ -45,6 +46,7 @@ namespace DieselBundleViewer.ViewModels
         public int GridViewScale { get => gridViewScale; set => SetProperty(ref gridViewScale, value); }
 
         public Dictionary<Idstring, PackageHeader> PackageHeaders;
+        public Dictionary<Idstring, CrateFile> CrateFiles;
 
         public Dictionary<uint, FileEntry> FileEntries { get; set; }
 
@@ -100,6 +102,7 @@ namespace DieselBundleViewer.ViewModels
 
             //Lists and stuff for the bundles/files/etc
             PackageHeaders = [];
+            CrateFiles = [];
             Bundles = [];
             ToRender = [];
             FoldersToRender = [];
@@ -271,8 +274,8 @@ namespace DieselBundleViewer.ViewModels
 
         public async void OpenFileDialogExec()
         {
-            OpenFileDialog ofd = new() { Filter = "Bundle Database File (*.blb)|*.blb"};
-            
+            OpenFileDialog ofd = new() { Filter = "Bundle/Crate Database (*.blb;*.properties)|*.blb;*.properties|Bundle Database File (*.blb)|*.blb|Crate Properties (*.properties)|*.properties" };
+
             //Here we try to default to 2 very possible directories of PD2 which most users will use it for.
             if(!RecentFilesVis)
             {
@@ -287,7 +290,7 @@ namespace DieselBundleViewer.ViewModels
                 if (found)
                     ofd.InitialDirectory = possiblePath;
             }
-            
+
             var result = ofd.ShowDialog();
             if (result == true)
             {
@@ -303,13 +306,18 @@ namespace DieselBundleViewer.ViewModels
 
                 RaisePropertyChanged(nameof(RecentFilesVis));
 
-                await OpenBLBFile(fileName);
+                await OpenFileImpl(fileName);
             }
         }
 
-        public async void OpenFileExec(string fileName)
+        public async void OpenFileExec(string fileName) => await OpenFileImpl(fileName);
+
+        private Task OpenFileImpl(string fileName)
         {
-            await OpenBLBFile(fileName);
+            if (fileName.EndsWith(".properties", StringComparison.OrdinalIgnoreCase))
+                return OpenCrateFile(fileName);
+            else
+                return OpenBLBFile(fileName);
         }
 
         public void ExtractAllExec()
@@ -340,6 +348,7 @@ namespace DieselBundleViewer.ViewModels
                 Root = null;
                 DB = null;
                 PackageHeaders.Clear();
+                CrateFiles.Clear();
                 ToRender.Clear();
                 FoldersToRender.Clear();
                 SelectedBundles.Clear();
@@ -353,17 +362,59 @@ namespace DieselBundleViewer.ViewModels
         }
         #endregion
 
-        public async Task OpenBLBFile(string filePath)
+        private (Stopwatch timer, CancellationTokenSource cancelSource) BeginLoad()
         {
             Stopwatch timer = new();
             timer.Start();
 
             CloseBLBExec();
 
-            CancellationTokenSource CancelSource = new();
-            cancelLastTask = CancelSource;
+            CancellationTokenSource cancelSource = new();
+            cancelLastTask = cancelSource;
 
             CloseBLB.RaiseCanExecuteChanged();
+
+            return (timer, cancelSource);
+        }
+
+        private bool FinishLoad(Stopwatch timer, CancellationTokenSource cancelSource, IEnumerable<Idstring> bundleKeys)
+        {
+            timer.Stop();
+
+            if (cancelSource.IsCancellationRequested)
+                return false;
+
+            cancelLastTask = null;
+
+            OpenFindDialog.RaiseCanExecuteChanged();
+            ExtractAll.RaiseCanExecuteChanged();
+            OpenBundleSelectorDialog.RaiseCanExecuteChanged();
+            CloseBLB.RaiseCanExecuteChanged();
+
+            Bundles = [.. bundleKeys];
+            FoldersToRender.Clear();
+            FoldersToRender.Add(Root);
+
+            Status = $"Done. Took {timer.ElapsedMilliseconds / 1000} seconds";
+            return true;
+        }
+
+        private void CommitFileEntries(CancellationTokenSource cancelSource)
+        {
+            foreach (var fe in FileEntries.Values)
+            {
+                if (cancelSource.IsCancellationRequested)
+                    return;
+
+                fe.LoadPath();
+                RawFiles.Add(new Tuple<Idstring, Idstring, Idstring>(fe.PathIds, fe.LanguageIds, fe.ExtensionIds), fe);
+                Root?.Owner.AddFileEntry(fe);
+            }
+        }
+
+        public async Task OpenBLBFile(string filePath)
+        {
+            var (timer, CancelSource) = BeginLoad();
 
             await Task.Run(() =>
             {
@@ -437,36 +488,117 @@ namespace DieselBundleViewer.ViewModels
                     PackageHeaders.Add(bundle.Name, bundle);
                 }
 
-                foreach(var fe in FileEntries.Values)
-                {
-                    if (CancelSource.IsCancellationRequested)
-                        return;
-
-                    fe.LoadPath();
-                    RawFiles.Add(new Tuple<Idstring, Idstring, Idstring>(fe.PathIds, fe.LanguageIds, fe.ExtensionIds), fe);
-                    Root?.Owner.AddFileEntry(fe);
-                }
+                CommitFileEntries(CancelSource);
 
                 GC.Collect();
             });
 
-            timer.Stop();
-
-            if (CancelSource.IsCancellationRequested)
+            if (!FinishLoad(timer, CancelSource, PackageHeaders.Keys))
                 return;
 
-            cancelLastTask = null;
+            //Finally, render the items.
+            RenderNewItems();
+        }
 
-            OpenFindDialog.RaiseCanExecuteChanged();
-            ExtractAll.RaiseCanExecuteChanged();
-            OpenBundleSelectorDialog.RaiseCanExecuteChanged();
-            CloseBLB.RaiseCanExecuteChanged();
+        /// <summary>
+        /// Opens a directory of self-contained .crate packages. filePath is
+        /// the crates.properties file (used both to locate the assets
+        /// directory and for its variant bitflag table) -- each .crate's own
+        /// TOC already carries its entries' hashes, so no other external
+        /// index is needed.
+        /// </summary>
+        public async Task OpenCrateFile(string filePath)
+        {
+            var (timer, CancelSource) = BeginLoad();
 
-            Status = $"Done. Took {timer.ElapsedMilliseconds / 1000} seconds";
+            await Task.Run(() =>
+            {
+                if (CancelSource.IsCancellationRequested)
+                    return;
 
-            Bundles = [.. PackageHeaders.Keys];
-            FoldersToRender.Clear();
-            FoldersToRender.Add(Root);
+                //Create the root tree entry, here all other folders will reside.
+                Root = new TreeEntryViewModel(this, new FolderEntry { EntryPath = "", Name = "assets" });
+
+                Status = "Preparing to open crate assets...";
+                AssetsDir = Path.GetDirectoryName(filePath);
+
+                string hashlistPath = Path.Combine(AssetsDir, "hashlist");
+                if (File.Exists(hashlistPath))
+                {
+                    Status = "Loading hashlist";
+                    HashIndex.Load(hashlistPath);
+                }
+
+                // VariantFlag -> resolved name (e.g. "english", "d3d11"), from crates.properties.
+                Dictionary<ulong, Idstring> variantNames = [];
+                var props = new CratePropertyList(filePath);
+                foreach (var prop in props.Properties)
+                    variantNames[prop.Flag] = prop.Name;
+
+                List<string> Files = Directory.EnumerateFiles(AssetsDir, "*.crate").ToList();
+
+                // Keyed by (ext, path, variant) so each language/platform variant gets its own FileEntry.
+                Dictionary<(ulong ext, ulong path, ulong variant), FileEntry> entryLookup = [];
+
+                for (int i = 0; i < Files.Count; i++)
+                {
+                    if (CancelSource.IsCancellationRequested)
+                        return;
+
+                    string file = Files[i];
+                    string crateName = Path.GetFileNameWithoutExtension(file);
+
+                    Status = string.Format("Loading crate {0} {1}/{2}", crateName, i, Files.Count);
+
+                    CrateFile crate;
+                    try
+                    {
+                        crate = new CrateFile(file);
+                    }
+                    catch (Exception exc)
+                    {
+                        Console.WriteLine("Failed to load crate {0}: {1}", file, exc.Message);
+                        continue;
+                    }
+
+                    // .crate filenames are always the literal on-disk name, unlike bundle names.
+                    Idstring crateIds = new(crateName, true);
+
+                    foreach (CrateFileEntry ce in crate.Entries)
+                    {
+                        if (CancelSource.IsCancellationRequested)
+                            return;
+
+                        var key = (ce.Extension.Hashed, ce.Path.Hashed, ce.VariantFlag);
+                        if (!entryLookup.TryGetValue(key, out FileEntry fe))
+                        {
+                            variantNames.TryGetValue(ce.VariantFlag, out Idstring variantName);
+                            fe = new FileEntry
+                            {
+                                PathIds = ce.Path,
+                                ExtensionIds = ce.Extension,
+                                LanguageIds = ce.VariantFlag != 0 ? variantName : null,
+                            };
+                            entryLookup[key] = fe;
+                        }
+
+                        fe.AddCrateEntry(crateIds, ce);
+                    }
+
+                    CrateFiles.Add(crateIds, crate);
+                }
+
+                FileEntries = entryLookup.Values
+                    .Select((fe, id) => (fe, id))
+                    .ToDictionary(t => (uint)t.id, t => t.fe);
+
+                CommitFileEntries(CancelSource);
+
+                GC.Collect();
+            });
+
+            if (!FinishLoad(timer, CancelSource, CrateFiles.Keys))
+                return;
 
             //Finally, render the items.
             RenderNewItems();

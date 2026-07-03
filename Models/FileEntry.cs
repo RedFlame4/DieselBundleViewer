@@ -1,11 +1,13 @@
 ﻿using DieselBundleViewer.Services;
 using DieselBundleViewer.ViewModels;
 using DieselEngineFormats.Bundle;
+using DieselEngineFormats.Crate;
 using DieselEngineFormats.Utils;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Text;
 
 namespace DieselBundleViewer.Models
@@ -19,17 +21,16 @@ namespace DieselBundleViewer.Models
         public Idstring LanguageIds;
         public Idstring ExtensionIds;
 
-        private uint _size;
-        public uint Size {
+        private ulong _size;
+        public ulong Size {
             get {
                 if (_size == 0 && BundleEntries.Count > 0)
                 {
-                    foreach (var be in BundleEntries)
-                    {
-                        _size += (uint)(be.Value).Length;
-                    }
-
-                    _size = (uint)(_size / Math.Max(BundleEntries.Count, 1));
+                    _size = (ulong)BundleEntries.Values.Sum(be => (long)be.Length) / (ulong)BundleEntries.Count;
+                }
+                else if (_size == 0 && CrateEntry != null)
+                {
+                    _size = CrateEntry.RawSize;
                 }
                 return _size;
             }
@@ -68,6 +69,12 @@ namespace DieselBundleViewer.Models
 
         public Dictionary<Idstring, PackageFileEntry> BundleEntries { get; set; }
 
+        // A given asset only ever lives in one .crate, unlike bundles.
+        public Idstring CrateName { get; private set; }
+        public CrateFileEntry CrateEntry { get; private set; }
+
+        public bool HasPackageData => BundleEntries.Count > 0 || CrateEntry != null;
+
         public DatabaseEntry DBEntry { get; set; }
 
         public string Type => ExtensionIds?.ToString();
@@ -97,22 +104,28 @@ namespace DieselBundleViewer.Models
             }
         }
 
-        /// <summary>
-        /// Checks if the file is in a bundle.
-        /// </summary>
-        /// <param name="name">The name (idstring) of the bundle</param>
-        /// <returns>true if it's in the bundle</returns>
-        public bool InBundle(Idstring name) => BundleEntries.ContainsKey(name);
+        public void AddCrateEntry(Idstring crateName, CrateFileEntry entry)
+        {
+            CrateName = crateName;
+            CrateEntry = entry;
+        }
 
         /// <summary>
-        /// Returns whether or not the file is in one of the bundles provided in the arguments
+        /// Checks if the file is in a bundle or crate.
+        /// </summary>
+        /// <param name="name">The name (idstring) of the bundle/crate</param>
+        /// <returns>true if it's in the bundle/crate</returns>
+        public bool InBundle(Idstring name) => BundleEntries.ContainsKey(name) || (CrateName != null && CrateName.Equals(name));
+
+        /// <summary>
+        /// Returns whether or not the file is in one of the bundles/crates provided in the arguments
         /// </summary>
         /// <param name="names">Names (idstring) of packages to test with</param>
         public bool InBundles(List<Idstring> names)
         {
             foreach (var bundle in names)
             {
-                if (BundleEntries.ContainsKey(bundle))
+                if (InBundle(bundle))
                     return true;
             }
             return false;
@@ -139,10 +152,9 @@ namespace DieselBundleViewer.Models
         }
 
         /// <summary>
-        /// Returns the bytes[] of the file
+        /// Runs a package-specific byte read, logging null/failure cases uniformly.
         /// </summary>
-        /// <param name="entry">A package entry to use for the data. Defaults to what MaxBundleEntry returns.</param>
-        private byte[] FileEntryBytes(PackageFileEntry entry)
+        private static byte[] TryReadBytes<T>(T entry, Func<T, byte[]> read) where T : class
         {
             if (entry == null)
             {
@@ -150,24 +162,9 @@ namespace DieselBundleViewer.Models
                 return null;
             }
 
-            string bundle_path = Path.Combine(Utils.CurrentWindow.AssetsDir, entry.Parent.BundleName + ".bundle");
-            if (!File.Exists(bundle_path))
-            {
-                Console.WriteLine("Bundle: {0}, does not exist", bundle_path);
-                return null;
-            }
-
             try
             {
-                using FileStream fs = new FileStream(bundle_path, FileMode.Open, FileAccess.Read);
-                using BinaryReader br = new BinaryReader(fs);
-                if (entry.Length != 0)
-                {
-                    fs.Position = entry.Address;
-                    return br.ReadBytes((int)(entry.Length == -1 ? fs.Length - fs.Position : entry.Length));
-                }
-                else
-                    return new byte[0];
+                return read(entry);
             }
             catch (Exception exc)
             {
@@ -180,14 +177,41 @@ namespace DieselBundleViewer.Models
         }
 
         /// <summary>
+        /// Returns the bytes[] of the file
+        /// </summary>
+        /// <param name="entry">A package entry to use for the data. Defaults to what MaxBundleEntry returns.</param>
+        private byte[] FileEntryBytes(PackageFileEntry entry) => TryReadBytes(entry, e =>
+        {
+            string bundle_path = Path.Combine(Utils.CurrentWindow.AssetsDir, e.Parent.BundleName + ".bundle");
+            if (!File.Exists(bundle_path))
+            {
+                Console.WriteLine("Bundle: {0}, does not exist", bundle_path);
+                return null;
+            }
+
+            using FileStream fs = new FileStream(bundle_path, FileMode.Open, FileAccess.Read);
+            using BinaryReader br = new BinaryReader(fs);
+            if (e.Length != 0)
+            {
+                fs.Position = e.Address;
+                return br.ReadBytes((int)(e.Length == -1 ? fs.Length - fs.Position : e.Length));
+            }
+            else
+                return new byte[0];
+        });
+
+        /// <summary>
+        /// Returns the bytes[] of a crate-backed entry, decompressing as needed.
+        /// </summary>
+        private byte[] CrateEntryBytes(CrateFileEntry entry) => TryReadBytes(entry, e => e.Parent.ReadEntry(e));
+
+        /// <summary>
         /// Returns a MemoryStream of the file.
         /// </summary>
         /// <param name="entry">A package entry to use for the data. Defaults to what MaxBundleEntry returns.</param>
         public MemoryStream FileStream(PackageFileEntry entry = null)
         {
-            entry ??= MaxBundleEntry();
-
-            byte[] bytes = FileEntryBytes(entry);
+            byte[] bytes = FileBytes(entry);
             if (bytes == null)
                 return null;
 
@@ -197,9 +221,10 @@ namespace DieselBundleViewer.Models
 
         public byte[] FileBytes(PackageFileEntry entry = null)
         {
-            entry ??= MaxBundleEntry();
+            if (entry != null || BundleEntries.Count > 0)
+                return FileEntryBytes(entry ?? MaxBundleEntry());
 
-            return FileEntryBytes(entry);
+            return CrateEntryBytes(CrateEntry);
         }
 
         /// <summary>
