@@ -537,6 +537,13 @@ namespace DieselBundleViewer.ViewModels
 
                 List<string> Files = Directory.EnumerateFiles(AssetsDir, "*.crate").ToList();
 
+                // Load in ascending priority order so that when an asset id
+                // appears in several crates, the highest-priority one (a patch
+                // crate, highest-numbered last) is loaded last and wins.
+                Files.Sort((x, y) => CratePriority.Compare(
+                    Path.GetFileNameWithoutExtension(x),
+                    Path.GetFileNameWithoutExtension(y)));
+
                 // Keyed by (ext, path, variant) so each language/platform variant gets its own FileEntry.
                 Dictionary<(ulong ext, ulong path, ulong variant), FileEntry> entryLookup = [];
 

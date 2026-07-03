@@ -69,7 +69,9 @@ namespace DieselBundleViewer.Models
 
         public Dictionary<Idstring, PackageFileEntry> BundleEntries { get; set; }
 
-        // A given asset only ever lives in one .crate, unlike bundles.
+        // The source .crate for this asset. The same asset id can appear in a
+        // base crate and one or more patch crates; crates are loaded in ascending
+        // priority order so the highest-priority one (see CratePriority) wins.
         public Idstring CrateName { get; private set; }
         public CrateFileEntry CrateEntry { get; private set; }
 
@@ -106,6 +108,9 @@ namespace DieselBundleViewer.Models
 
         public void AddCrateEntry(Idstring crateName, CrateFileEntry entry)
         {
+            // Last write wins: crates are loaded in ascending priority order
+            // (see OpenCrateFile / CratePriority), so a patch crate loaded after
+            // the base crate overrides it as the source of truth.
             CrateName = crateName;
             CrateEntry = entry;
         }
